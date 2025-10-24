@@ -1,39 +1,58 @@
 -- models/intermediate/int_product_performance.sql
-with order_items as (
-    select *
-    from {{ ref('stg_order_items') }}
+{{ config(
+    materialized = 'view',
+    tags = ['intermediate']
+) }}
+
+WITH product_sales AS (
+    SELECT
+        oi.product_id,
+        COUNT(DISTINCT oi.order_id) AS total_orders,
+        SUM(oi.price) AS total_sales,
+        AVG(oi.price) AS avg_price,
+        SUM(oi.freight_value) AS total_freight,
+        SUM(oi.price + oi.freight_value) AS gross_revenue
+    FROM {{ ref('stg_order_items') }} oi
+    JOIN {{ ref('stg_orders') }} o ON oi.order_id = o.order_id
+    WHERE o.order_status NOT IN ('canceled')
+    GROUP BY oi.product_id
 ),
-orders as (
-    select order_id, customer_city, customer_state
-    from {{ ref('stg_orders') }}
+
+product_reviews AS (
+    SELECT
+        p.product_id,
+        AVG(r.review_score) AS avg_review_score,
+        COUNT(r.review_id) AS total_reviews
+    FROM {{ ref('stg_order_items') }} p
+    JOIN {{ ref('stg_reviews') }} r ON p.order_id = r.order_id
+    GROUP BY p.product_id
 ),
-products as (
-    select product_id, product_category_name
-    from {{ ref('stg_products') }}
-),
-reviews as (
-    select order_id, product_id, review_score
-    from {{ ref('stg_order_reviews') }}
+
+product_details AS (
+    SELECT
+        product_id,
+        product_category_name,
+        product_weight_g,
+        product_length_cm,
+        product_height_cm,
+        product_width_cm
+    FROM {{ ref('stg_products') }}
 )
 
-select
-    p.product_id,
-    p.product_category_name,
-    o.customer_city,
-    o.customer_state,
-
-    -- Metrics
-    count(distinct oi.order_id) as total_orders,
-    count(*) as total_quantity_sold,
-    sum(oi.price + oi.freight_value) as total_revenue,
-    avg(oi.price) as avg_price,
-    avg(r.review_score) as avg_review_score,
-
-    -- Ranking for top product per city
-    row_number() over (partition by o.customer_city order by sum(oi.price + oi.freight_value) desc) as top_product_rank_by_city
-
-from order_items oi
-join orders o on oi.order_id = o.order_id
-join products p on oi.product_id = p.product_id
-left join reviews r on oi.order_id = r.order_id and oi.product_id = r.product_id
-group by 1,2,3,4
+SELECT
+    ps.product_id,
+    pd.product_category_name,
+    ps.total_orders,
+    ps.total_sales,
+    ps.avg_price,
+    ps.total_freight,
+    ps.gross_revenue,
+    pr.avg_review_score,
+    pr.total_reviews,
+    pd.product_weight_g,
+    pd.product_length_cm,
+    pd.product_height_cm,
+    pd.product_width_cm
+FROM product_sales ps
+LEFT JOIN product_reviews pr ON ps.product_id = pr.product_id
+LEFT JOIN product_details pd ON ps.product_id = pd.product_id
