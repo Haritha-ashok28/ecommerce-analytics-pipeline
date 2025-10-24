@@ -1,24 +1,20 @@
 -- models/intermediate/int_payment_summary.sql
 -- Payment-type metrics
 
-with payments as (
-    select * from {{ ref('stg_payments') }}
-),
-orders as (
-    select order_id, customer_state, customer_city
-    from {{ ref('stg_orders') }}
-)
+{{ config(
+    materialized = 'view',
+    tags = ['intermediate']
+) }}
 
-select
+SELECT
     p.payment_type,
-    o.customer_state,
-    o.customer_city,
-    
-    count(distinct p.order_id) as total_orders,
-    sum(p.payment_value) as total_payment_value,
-    avg(p.payment_value) as avg_payment_value,
-    max(p.payment_installments) as max_installments
-
-from payments p
-join orders o on p.order_id = o.order_id
-group by 1,2,3
+    p.order_id, 
+    COUNT(*) OVER (PARTITION BY p.payment_type) AS total_payments,
+    SUM(p.payment_value) OVER (PARTITION BY p.payment_type) AS total_payment_value,
+    AVG(p.payment_value) OVER (PARTITION BY p.payment_type) AS avg_payment_value,
+    AVG(p.payment_installments) OVER (PARTITION BY p.payment_type) AS avg_installments
+FROM {{ ref('stg_payments') }} p
+JOIN {{ ref('stg_orders') }} o 
+  ON p.order_id = o.order_id
+WHERE o.order_status NOT IN ('canceled')
+ORDER BY total_payment_value DESC
