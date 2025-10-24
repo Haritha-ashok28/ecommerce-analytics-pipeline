@@ -1,29 +1,55 @@
 -- models/intermediate/int_customer_behavior.sql
 -- Aggregates order-level metrics to customer-level
 
-with order_summary as (
-    select * from {{ ref('int_order_summary') }}
+{{ config(
+    materialized = 'view',
+    tags = ['intermediate']
+) }}
+
+WITH customer_orders AS (
+    SELECT
+        customer_id,
+        COUNT(DISTINCT order_id) AS total_orders,
+        SUM(total_order_value) AS total_spent,
+        AVG(total_order_value) AS avg_order_value,
+        MAX(order_purchase_ts) AS last_order_date,
+        MIN(order_purchase_ts) AS first_order_date
+    FROM {{ ref('int_order_summary') }}
+    WHERE order_status NOT IN ('canceled')
+    GROUP BY customer_id
+),
+
+order_frequency AS (
+    SELECT
+        customer_id,
+        DATEDIFF('day', MIN(order_purchase_ts), MAX(order_purchase_ts)) 
+            / NULLIF(COUNT(DISTINCT order_id) - 1, 0) AS avg_days_between_orders
+    FROM {{ ref('int_order_summary') }}
+    GROUP BY customer_id
+),
+
+customer_location AS (
+    SELECT
+        customer_id,
+        customer_uid,
+        customer_city,
+        customer_state
+    FROM {{ ref('stg_customers') }}
 )
 
-select
-    customer_id,
-    customer_unique_id,
-    customer_city,
-    customer_state,
-    
-    -- Customer order metrics
-    count(distinct order_id) as total_orders,
-    sum(total_order_value) as total_spend,
-    sum(total_payment_value) as total_paid,
-    avg(total_order_value) as avg_order_value,
-    
-    -- Order status metrics
-    sum(is_canceled) as total_canceled_orders,
-    round(sum(is_canceled)::numeric / nullif(count(*),0),2) as canceled_ratio,
-    
-    -- Repeat purchase metrics
-    count(distinct order_id) filter (where is_canceled = 0) as completed_orders,
-    round(sum(total_order_value) filter (where is_canceled = 0) / nullif(count(distinct order_id) filter (where is_canceled = 0),0),2) as avg_completed_order_value
+SELECT
+    co.customer_id,
+    cl.customer_uid,
+    cl.customer_city,
+    cl.customer_state,
+    co.total_orders,
+    co.total_spent,
+    co.avg_order_value,
+    co.first_order_date,
+    co.last_order_date,
+    ofreq.avg_days_between_orders,
+    DATEDIFF('day', co.last_order_date, CURRENT_DATE()) AS days_since_last_order
+FROM customer_orders co
+LEFT JOIN order_frequency ofreq ON co.customer_id = ofreq.customer_id
+LEFT JOIN customer_location cl ON co.customer_id = cl.customer_id
 
-from order_summary
-group by 1,2,3,4
